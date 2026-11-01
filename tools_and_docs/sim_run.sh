@@ -99,9 +99,9 @@ if command -v xhost >/dev/null 2>&1; then
   xhost +local:docker
 fi
 
-# WSL-specific options
+# WSL-specific options (Set adapter to AMD or leave auto-detection without hardcoded NVIDIA)
 WSL_OPTS="--env WAYLAND_DISPLAY=$WAYLAND_DISPLAY --env PULSE_SERVER=$PULSE_SERVER --volume /usr/lib/wsl:/usr/lib/wsl \
---env MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA --env LD_LIBRARY_PATH=/usr/lib/wsl/lib --env LIBGL_ALWAYS_SOFTWARE=0"
+--env MESA_D3D12_DEFAULT_ADAPTER_NAME=AMD --env LD_LIBRARY_PATH=/usr/lib/wsl/lib --env LIBGL_ALWAYS_SOFTWARE=0"
 
 # Get display dimensions
 resolution=$(xrandr 2>/dev/null | grep " connected primary" | grep -oE '[0-9]+x[0-9]+' | head -1)
@@ -139,9 +139,11 @@ XTERM_CONFIG_ARGS=(
 
 # Launch the simulation container
 DOCKER_CMD="docker run -it --rm \
-  --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri --gpus all \
-  --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env NVIDIA_DRIVER_CAPABILITIES=all --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
-  --env __NV_PRIME_RENDER_OFFLOAD=1 --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
+  --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  --device /dev/dri --device /dev/kfd \
+  --group-add video --group-add render \
+  --security-opt seccomp=unconfined \
+  --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
   --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR \
   --env NUM_QUADS=$NUM_QUADS --env NUM_VTOLS=$NUM_VTOLS --env NUM_TAILS=$NUM_TAILS --env WORLD=$WORLD \
   --env SIMULATED_TIME=true --env RTF=$RTF --env START_AS_PAUSED=$START_AS_PAUSED \
@@ -151,6 +153,7 @@ DOCKER_CMD="docker run -it --rm \
   --env HOST_INPUT_GID=$(getent group input | cut -d: -f3) \
   --privileged \
   --name $SIM_CONT_NAME"
+  
 # Configure network for HITL or SITL
 if [[ "$HITL" == "true" ]]; then
   DOCKER_CMD="$DOCKER_CMD --net=host"
@@ -172,9 +175,11 @@ if [[ "$HITL" == "false" ]]; then
     sleep 1.0 # Limit resource usage
     # Launch the ground container
     DOCKER_CMD="docker run -it --rm \
-      --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri --gpus all \
-      --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env NVIDIA_DRIVER_CAPABILITIES=all --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
-      --env __NV_PRIME_RENDER_OFFLOAD=1 --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
+      --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
+      --device /dev/dri --device /dev/kfd \
+      --group-add video --group-add render \
+      --security-opt seccomp=unconfined \
+      --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
       --env HEADLESS=$HEADLESS --env AUTOPILOT=$AUTOPILOT \
       --env QUAD_IDS=$(seq -s, 1 $NUM_QUADS) \
       --env VTOL_IDS=$(seq -s, $((NUM_QUADS + 1)) $((NUM_QUADS + NUM_VTOLS))) \
@@ -207,9 +212,11 @@ if [[ "$HITL" == "false" ]]; then
       sleep 1.0 # Limit resource usage
       local NAME_AIRCRAFT_CNT="aircraft-container-inst${INSTANCE}_${DRONE_ID}"
       DOCKER_CMD="docker run -it --rm \
-        --volume /tmp/.X11-unix:/tmp/.X11-unix:rw --device /dev/dri --gpus all \
-        --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env NVIDIA_DRIVER_CAPABILITIES=all --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
-        --env __NV_PRIME_RENDER_OFFLOAD=1 --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
+        --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
+        --device /dev/dri --device /dev/kfd \
+        --group-add video --group-add render \
+        --security-opt seccomp=unconfined \
+        --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
         --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR --env ODOM=$ODOM --env PX4_ROS2_LIB=$PX4_ROS2_LIB \
         --env DRONE_TYPE=$drone_type --env DRONE_ID=$DRONE_ID \
         --env SIMULATED_TIME=true \
@@ -301,7 +308,7 @@ cleanup() {
         if [ -n "$CID" ]; then
           CNT_NAME=$(docker inspect --format="{{.Name}}" "$CID" | sed 's/^\///')
           echo "Removing $CNT_NAME..."
-          docker stop -t 1 $CID >/dev/null 2>&1 || true # If needed, increase timeout -t to avoid NVIDIA driver panic
+          docker stop -t 1 $CID >/dev/null 2>&1 || true # If needed, increase timeout -t to avoid driver panic
           docker rm $CID >/dev/null 2>&1 || true
         fi
       done

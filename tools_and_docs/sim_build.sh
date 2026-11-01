@@ -67,10 +67,6 @@ for repo_info in "${REPOS[@]}"; do
     TAGS=$(git tag --points-at HEAD | paste -sd, -)
     HEAD_INFO=$(git log -1 --format='%h %cs (%cr)')
     printf '%-30s %-20s %-20s %s\n' "$dir" "${BRANCH:-[detached]}" "$TAGS" "$HEAD_INFO"
-    # The script does not automatically pull changes for already cloned repos (as they should be on fixed tags)
-    # This avoids breaking the Docker cache but it requires manually deleting the _github_clones folder for branch/tag updates
-    # git pull
-    # git submodule update --init --recursive --depth 1
     cd "$CLONE_DIR"
   else
     echo "Clone not found, cloning ${dir}..."
@@ -121,7 +117,7 @@ if [ "$CLONE_ONLY" = "true" ]; then
   echo -e "Skipping Docker builds"
 else
   # Keep the base images local, so cached builds also work offline
-  for img in nvcr.io/nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04 ubuntu:24.04; do docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img"; done
+  for img in ubuntu:24.04; do docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img"; done
   # Build common layers reused between images
   docker build $BUILD_OPTS --provenance=false --target ros2-image -t transitional-ros2-image -f "${SCRIPT_DIR}/docker/aircraft.dockerfile" "${SCRIPT_DIR}/.."
   docker build $BUILD_OPTS --provenance=false --target ros2-gcs-image -t transitional-ros2-gcs-image -f "${SCRIPT_DIR}/docker/ground.dockerfile" "${SCRIPT_DIR}/.."

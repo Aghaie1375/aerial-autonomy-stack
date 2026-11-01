@@ -213,8 +213,16 @@ class YoloInferenceNode(Node):
                     print("Stream resolution is >320. Selecting 640 model.")
                     model_path = "/aas/yolo/yolo26n_640.onnx"
                     self.input_size = 640 # YOLO input size
-                print("Loading CUDAExecutionProvider on AMD64 (x86) architecture.")
-                self.session = ort.InferenceSession(model_path, providers=["CUDAExecutionProvider"]) # For simulation
+
+                # Dynamically choose execution provider for AMD / ROCm / CPU fallback
+                available_providers = ort.get_available_providers()
+                preferred_order = ['ROCMExecutionProvider', 'MIGraphXExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+                selected_providers = [p for p in preferred_order if p in available_providers]
+                if not selected_providers:
+                    selected_providers = ['CPUExecutionProvider']
+
+                print(f"Detected providers: {available_providers}. Selected: {selected_providers}")
+                self.session = ort.InferenceSession(model_path, providers=selected_providers)
             elif self.architecture == 'aarch64':
                 model_path = "/aas/yolo/yolo26n_640.onnx" # Real CSI camera IMX219-200 is 1280x720, we resize to 640x640 for YOLO (this is slightly wasteful when self.hitl = True)
                 self.input_size = 640 # YOLO input size
@@ -224,7 +232,6 @@ class YoloInferenceNode(Node):
                 provider_options = {
                     'trt_engine_cache_enable': True, # The first cache build takes ~5-10'
                     'trt_engine_cache_path': cache_path,
-                    # TensorRT 11 is strongly-typed, precision comes from the ONNX graph (exported with half=True), trt_fp16_enable would be ignored
                 }
                 self.session = ort.InferenceSession(
                     model_path,
@@ -237,7 +244,7 @@ class YoloInferenceNode(Node):
             # Confirm execution providers
             self.get_logger().info(f"Execution providers in use: {self.session.get_providers()}")
         else:
-            self.get_logger().info("Inference disabled")
+                self.get_logger().info("Inference disabled")
 
         if not self.headless:
             drone_id = os.getenv('DRONE_ID', '1')
