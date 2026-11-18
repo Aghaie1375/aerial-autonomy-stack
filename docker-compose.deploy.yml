@@ -1,0 +1,42 @@
+services:
+  px4-bridge:
+    build:
+      context: .
+      dockerfile: ./tools_and_docs/docker/Dockerfile.px4_bridge
+    container_name: sbc_px4_bridge
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=42
+      - PX4_BAUD=921600
+      - PX4_TRANSPORT=${PX4_TRANSPORT:-serial}
+      - PX4_PORT=${PX4_PORT:-8888}
+      - PX4_DEV=${PX4_DEV:-/dev/ttyACM0}
+
+  perception:
+    build:
+      context: .
+      dockerfile: ./tools_and_docs/docker/Dockerfile.perception
+    container_name: sbc_perception
+    network_mode: host
+    ipc: host
+    environment:
+      - ROS_DOMAIN_ID=42
+    volumes:
+      - ./models:/ws/models:ro # Mount your .onnx YOLO weights
+      - ./bags:/ws/bags # Mount recorded rosbags for offline testing
+
+  mission-brain:
+    build:
+      context: .
+      dockerfile: ./tools_and_docs/docker/Dockerfile.brain
+    container_name: sbc_mission_brain
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      - ROS_DOMAIN_ID=42
+    volumes:
+      - ./aircraft/aircraft_ws/src:/ws/brain_ws/src/mission_brain
+      - ./python_tests:/ws/python_tests

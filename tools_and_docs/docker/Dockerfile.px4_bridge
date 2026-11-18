@@ -1,0 +1,23 @@
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gnupg lsb-release ca-certificates build-essential cmake git \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu noble main" > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-ros-base python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build Micro-XRCE-DDS-Agent
+COPY _github_clones/Micro-XRCE-DDS-Agent /ws/Micro-XRCE-DDS-Agent
+RUN mkdir -p /ws/Micro-XRCE-DDS-Agent/build && cd /ws/Micro-XRCE-DDS-Agent/build \
+    && cmake .. && make -j$(nproc) && make install && ldconfig
+
+# Build px4_msgs
+WORKDIR /ws/bridge_ws
+COPY _github_clones/px4_msgs src/px4_msgs
+RUN bash -c "source /opt/ros/jazzy/setup.bash && colcon build --symlink-install"
+
+# Default: connect to PX4 over USB/UART at 921600 baud
+CMD ["bash", "-c", "source /opt/ros/jazzy/setup.bash && source /ws/bridge_ws/install/setup.bash && if [ \"${PX4_TRANSPORT:-serial}\" = \"udp\" ]; then exec MicroXRCEAgent udp4 -p ${PX4_PORT:-8888}; else exec MicroXRCEAgent serial --dev ${PX4_DEV:-/dev/ttyACM0} -b ${PX4_BAUD:-921600}; fi"]

@@ -31,13 +31,15 @@ INSTANCE="${INSTANCE:-0}" # Integer ID to make docker network/container names un
 # Note: the analysis/plotting env variable is used by this script on cleanup and NOT passed to any container
 PLOT="${PLOT:-false}" # Options: true, false (default)
 
-# Detect the environment (Ubuntu/GNOME, WSL, etc.)
+# Detect the environment (Ubuntu/GNOME, WSL, or Headless Server via SSH X11)
 if echo "$XDG_CURRENT_DESKTOP" | grep -qi "gnome"; then
   DESK_ENV="gnome"
 elif grep -qEi "(Microsoft|WSL)" /proc/version &> /dev/null; then
   DESK_ENV="wsl"
+elif [ -n "$SSH_CONNECTION" ] || [ -n "$DISPLAY" ] || [ "$HEADLESS" = "true" ]; then
+  DESK_ENV="ssh_x11"
 else
-  echo "Untested (non-GNOME, non-WSL) desktop environment, exiting."
+  echo "Untested environment and no DISPLAY/SSH session detected, exiting."
   exit 1
 fi
 echo "Desktop environment: $DESK_ENV"
@@ -45,6 +47,7 @@ echo "Desktop environment: $DESK_ENV"
 # Find the script's path
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# Check env variables
 # Check env variables
 source "${SCRIPT_DIR}/tests/check_env_vars.sh"
 check_enum AUTOPILOT px4 ardupilot betaflight
@@ -94,9 +97,22 @@ if [[ "$HITL" == "false" ]]; then
   docker network inspect $AIR_NET_NAME >/dev/null 2>&1 || docker network create --subnet=${AIR_SUBNET}.0.0/16 $AIR_NET_NAME
 fi
 
-# Grant access to the X server
+# Grant access to the X server and prepare SSH X11 cookie + AMD GPU options
 if command -v xhost >/dev/null 2>&1; then 
-  xhost +local:docker
+  xhost +local:docker >/dev/null 2>&1 || true
+fi
+
+RENDER_GID=$(stat -c '%g' /dev/dri/renderD128 2>/dev/null || echo "988")
+GPU_OPTS="--device /dev/dri --device /dev/kfd --group-add video --group-add ${RENDER_GID}"
+
+XAUTH_TMP="/tmp/.aas_xauth_inst${INSTANCE}"
+SSH_X11_OPTS=""
+if [[ "$DESK_ENV" == "ssh_x11" && -n "$DISPLAY" ]] && command -v xauth >/dev/null 2>&1; then
+  rm -f "$XAUTH_TMP"
+  touch "$XAUTH_TMP"
+  chmod 644 "$XAUTH_TMP"
+  xauth nlist "$DISPLAY" 2>/dev/null | sed -e 's/^..../ffff/' | xauth -f "$XAUTH_TMP" nmerge - 2>/dev/null || true
+  SSH_X11_OPTS="--volume ${XAUTH_TMP}:/tmp/.Xauthority:ro --env XAUTHORITY=/tmp/.Xauthority --env VGL_DISPLAY=egl --env VGL_COMPRESS=proxy"
 fi
 
 # WSL-specific options (Set adapter to AMD or leave auto-detection without hardcoded NVIDIA)
@@ -140,8 +156,8 @@ XTERM_CONFIG_ARGS=(
 # Launch the simulation container
 DOCKER_CMD="docker run -it --rm \
   --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  --device /dev/dri --device /dev/kfd \
-  --group-add video --group-add render \
+  ${GPU_OPTS} \
+  ${SSH_X11_OPTS} \
   --security-opt seccomp=unconfined \
   --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
   --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR \
@@ -153,7 +169,7 @@ DOCKER_CMD="docker run -it --rm \
   --env HOST_INPUT_GID=$(getent group input | cut -d: -f3) \
   --privileged \
   --name $SIM_CONT_NAME"
-  
+
 # Configure network for HITL or SITL
 if [[ "$HITL" == "true" ]]; then
   DOCKER_CMD="$DOCKER_CMD --net=host"
@@ -176,8 +192,8 @@ if [[ "$HITL" == "false" ]]; then
     # Launch the ground container
     DOCKER_CMD="docker run -it --rm \
       --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
-      --device /dev/dri --device /dev/kfd \
-      --group-add video --group-add render \
+      ${GPU_OPTS} \
+      ${SSH_X11_OPTS} \
       --security-opt seccomp=unconfined \
       --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
       --env HEADLESS=$HEADLESS --env AUTOPILOT=$AUTOPILOT \
@@ -213,8 +229,8 @@ if [[ "$HITL" == "false" ]]; then
       local NAME_AIRCRAFT_CNT="aircraft-container-inst${INSTANCE}_${DRONE_ID}"
       DOCKER_CMD="docker run -it --rm \
         --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
-        --device /dev/dri --device /dev/kfd \
-        --group-add video --group-add render \
+        ${GPU_OPTS} \
+        ${SSH_X11_OPTS} \
         --security-opt seccomp=unconfined \
         --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
         --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR --env ODOM=$ODOM --env PX4_ROS2_LIB=$PX4_ROS2_LIB \
@@ -238,6 +254,7 @@ if [[ "$HITL" == "false" ]]; then
       DRONE_ID=$((DRONE_ID + 1))
     done
   }
+
   # Launch the Quad containers
   launch_aircraft_containers "quad" $NUM_QUADS
   # Launch the VTOL containers
@@ -246,13 +263,18 @@ if [[ "$HITL" == "false" ]]; then
   launch_aircraft_containers "tail" $NUM_TAILS
 
   if [[ "$GND_CONTAINER" == "true" ]]; then
-    sleep 2.0 # Once all containers are up, connect ground and aircraft containers to the air network
-    docker network connect --ip=${AIR_SUBNET}.90.$GROUND_ID $AIR_NET_NAME $GND_CONT_NAME
-    for i in $(seq 1 $((NUM_QUADS + NUM_VTOLS + NUM_TAILS))); do
-      docker network connect --ip=${AIR_SUBNET}.90.$i $AIR_NET_NAME "aircraft-container-inst${INSTANCE}_${i}"
-    done
+      # Wait until the ground and aircraft containers are actually registered by Docker (handles ssh -Y xterm latency)
+      for cname in "$GND_CONT_NAME" $(for i in $(seq 1 $((NUM_QUADS + NUM_VTOLS + NUM_TAILS))); do echo "aircraft-container-inst${INSTANCE}_${i}"; done); do
+        until [ "$(docker inspect -f '{{.State.Running}}' "$cname" 2>/dev/null)" = "true" ]; do
+          sleep 0.5
+        done
+      done
+      docker network connect --ip=${AIR_SUBNET}.90.$GROUND_ID $AIR_NET_NAME $GND_CONT_NAME
+      for i in $(seq 1 $((NUM_QUADS + NUM_VTOLS + NUM_TAILS))); do
+        docker network connect --ip=${AIR_SUBNET}.90.$i $AIR_NET_NAME "aircraft-container-inst${INSTANCE}_${i}"
+      done
+    fi
   fi
-fi
 
 echo "Fly, my pretties, fly!"
 echo "Press any key to stop all containers and close the terminals..."
@@ -318,14 +340,15 @@ cleanup() {
       PARENT_PID=$(ps -o ppid= -p $dpid 2>/dev/null | tr -d ' ') # Determine process pids with a parent pid
       if [ -n "$PARENT_PID" ]; then
         echo "Killing terminal process $dpid"
-        kill $dpid
+        kill $dpid 2>/dev/null || true
       fi
     done
   fi
   docker network rm $SIM_NET_NAME 2>/dev/null && echo "Removed $SIM_NET_NAME" || echo "Network $SIM_NET_NAME not found or already removed"
   docker network rm $AIR_NET_NAME 2>/dev/null && echo "Removed $AIR_NET_NAME" || echo "Network $AIR_NET_NAME not found or already removed"
+  rm -f "$XAUTH_TMP"
   if command -v xhost >/dev/null 2>&1; then
-    sleep 1 && xhost -local:docker >/dev/null
+    sleep 1 && xhost -local:docker >/dev/null 2>&1 || true
   fi
   echo "All-clear"
   if [[ "$PLOT" == "true" ]]; then

@@ -154,7 +154,7 @@ FROM ros2-gz-amd-px4-gst-zmq AS simulation-dev-image
 # 1. Install ROS 2 workspace dependencies
 COPY --from=simulation-manifests /src /aas/simulation_ws/src
 WORKDIR /aas/simulation_ws
-RUN rosdep update \
+RUN sed -i "/osx-homebrew/d" /etc/ros/rosdep/sources.list.d/20-default.list && (rosdep update --rosdistro jazzy || rosdep update --rosdistro jazzy) \
     && apt-get update \
     && rosdep install --from-paths src/ --ignore-src --rosdistro jazzy -y \
     && apt-get clean \
@@ -188,8 +188,18 @@ RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc \
     && echo "source /aas/simulation_ws/install/local_setup.bash" >> /root/.bashrc
 
 # 7. Copy AMD GPU / X11 SSH entrypoint & tmuxinator configuration
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# 5. Auto-route GUI 'gz sim' calls through VirtualGL on the AMD GPU for tmuxinator & docker exec
+RUN printf '#!/usr/bin/env bash\nsource /opt/ros/jazzy/setup.bash\nif [[ "$1" == "sim" && "$*" != *" -s"* && "$*" != *"--headless-rendering"* && -n "$DISPLAY" ]]; then\n  exec vglrun /usr/bin/gz "$@"\nelse\n  exec /usr/bin/gz "$@"\nfi\n' > /usr/local/bin/gz && \
+    chmod +x /usr/local/bin/gz
+
+# 6. Source ROS 2 and AAS workspaces in interactive shells
+RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc \
+    && echo "source /aas/github_ws/install/local_setup.bash" >> /root/.bashrc \
+    && echo "source /aas/simulation_ws/install/local_setup.bash" >> /root/.bashrc
+
+# 7. Generate AMD GPU / X11 SSH entrypoint & tmuxinator configuration
+RUN printf '#!/usr/bin/env bash\nset -e\nif [ -f /root/.Xauthority.ro ]; then\n    cp /root/.Xauthority.ro /tmp/.Xauthority\n    chmod 644 /tmp/.Xauthority\nfi\nexport XAUTHORITY=/tmp/.Xauthority\nsource /opt/ros/jazzy/setup.bash\n[ -f /aas/github_ws/install/local_setup.bash ] && source /aas/github_ws/install/local_setup.bash\n[ -f /aas/simulation_ws/install/local_setup.bash ] && source /aas/simulation_ws/install/local_setup.bash\nexec "$@"\n' > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
 
 WORKDIR /aas
 COPY simulation/simulation.yml.erb /aas/simulation.yml.erb
