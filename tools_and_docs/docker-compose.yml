@@ -1,0 +1,140 @@
+services:
+  simulation:
+    image: simulation-image
+    container_name: simulation-container-inst0
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - "${RENDER_GID:-988}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.aas_xauth_inst0:/tmp/.Xauthority:ro
+    environment:
+      - DISPLAY=${DOCKER_DISPLAY}
+      - XAUTHORITY=/tmp/.Xauthority
+      - VGL_DISPLAY=/dev/dri/renderD128
+      - VGL_COMPRESS=proxy
+      - QT_X11_NO_MITSHM=1
+      - GST_DEBUG=3
+      - AUTOPILOT=px4
+      - HEADLESS=${HEADLESS:-false}
+      - CAMERA=${CAMERA:-true}
+      - LIDAR=${LIDAR:-true}
+      - NUM_QUADS=1
+      - NUM_VTOLS=0
+      - NUM_TAILS=0
+      - WORLD=${WORLD:-impalpable_greyness}
+      - SIMULATED_TIME=true
+      - RTF=1.0
+      - START_AS_PAUSED=false
+      - SIM_SUBNET=10.42
+      - GROUND_ID=101
+      - GND_CONTAINER=true
+      - ROS_DOMAIN_ID=100
+      - HOST_INPUT_GID=${HOST_INPUT_GID:-104}
+    networks:
+      aas-sim-network-inst0:
+        ipv4_address: 10.42.90.100
+    stdin_open: true
+    tty: true
+
+  ground:
+    image: ground-image
+    container_name: ground-container-inst0
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - "${RENDER_GID:-988}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.aas_xauth_inst0:/tmp/.Xauthority:ro
+    environment:
+      - DISPLAY=${DOCKER_DISPLAY}
+      - XAUTHORITY=/tmp/.Xauthority
+      - VGL_DISPLAY=/dev/dri/renderD128
+      - VGL_COMPRESS=proxy
+      - QT_X11_NO_MITSHM=1
+      - GST_DEBUG=3
+      - HEADLESS=${HEADLESS:-false}
+      - AUTOPILOT=px4
+      - QUAD_IDS=1
+      - VTOL_IDS=
+      - TAIL_IDS=
+      - SIMULATED_TIME=true
+      - ROS_DOMAIN_ID=101
+      - HOST_INPUT_GID=${HOST_INPUT_GID:-104}
+    networks:
+      aas-sim-network-inst0:
+        ipv4_address: 10.42.90.101
+    stdin_open: true
+    tty: true
+
+  aircraft_1:
+    image: aircraft-image
+    container_name: aircraft-container-inst0_1
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - "${RENDER_GID:-988}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.aas_xauth_inst0:/tmp/.Xauthority:ro
+    environment:
+      - DISPLAY=${DOCKER_DISPLAY}
+      - XAUTHORITY=/tmp/.Xauthority
+      - VGL_DISPLAY=/dev/dri/renderD128
+      - VGL_COMPRESS=proxy
+      - QT_X11_NO_MITSHM=1
+      - GST_DEBUG=3
+      - AUTOPILOT=px4
+      - HEADLESS=${HEADLESS:-false}
+      - CAMERA=${CAMERA:-true}
+      - LIDAR=${LIDAR:-true}
+      - ODOM=none
+      - PX4_ROS2_LIB=false
+      - DRONE_TYPE=quad
+      - DRONE_ID=1
+      - SIMULATED_TIME=true
+      - SIM_SUBNET=10.42
+      - AIR_SUBNET=10.22
+      - SIM_ID=100
+      - GROUND_ID=101
+      - GND_CONTAINER=true
+      - ROS_DOMAIN_ID=1
+      - RECORD_ROSBAG=false
+    depends_on:
+      - simulation
+    networks:
+      aas-sim-network-inst0:
+        ipv4_address: 10.42.90.1
+      aas-air-network-inst0:
+        ipv4_address: 10.22.90.1
+    stdin_open: true
+    tty: true
+
+networks:
+  aas-sim-network-inst0:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.42.0.0/16
+  aas-air-network-inst0:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.22.0.0/16

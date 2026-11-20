@@ -72,12 +72,13 @@ RUN apt update \
     && echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc \
     && rosdep init
 
-# 3. Install Zenoh ROS 2 bridge (matching aircraft.dockerfile)
-RUN echo "deb [trusted=yes] https://download.eclipse.org/zenoh/debian-repo/ /" > /etc/apt/sources.list.d/zenoh.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends zenoh-bridge-ros2dds \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# 3. Install Zenoh ROS 2 bridge directly from GitHub Releases (bypasses download.eclipse.org 403)
+RUN ZENOH_VER=1.2.1 && \
+    ARCH=$(uname -m) && \
+    wget -q "https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/releases/download/${ZENOH_VER}/zenoh-plugin-ros2dds-${ZENOH_VER}-${ARCH}-unknown-linux-gnu-standalone.zip" -O /tmp/zenoh.zip && \
+    python3 -m zipfile -e /tmp/zenoh.zip /usr/local/bin/ && \
+    chmod +x /usr/local/bin/zenoh-bridge-ros2dds && \
+    rm -f /tmp/zenoh.zip
 
 ################################################################################
 # Add PX4 messages #############################################################

@@ -11,10 +11,14 @@ BUILD_ADVANCED_ODOM="${BUILD_ADVANCED_ODOM:-false}" # Options: true, false (defa
 CLEAN_BUILD="${CLEAN_BUILD:-false}" # Options: true, false (default), rebuild everything from scratch
 CLONE_ONLY="${CLONE_ONLY:-false}" # Options: true, false (default), clone the repos and skip the Docker builds
 BUILD_OPTS="${BUILD_OPTS:-}" # Extra `docker build` options, e.g. BUILD_OPTS=--progress=plain (default = none)
+TARGETARCH="${TARGETARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}" # Host architecture (amd64)
+RENDER_GID="${RENDER_GID:-$(stat -c '%g' /dev/dri/renderD128 2>/dev/null || echo 988)}" # Host AMD render node GID
 
 # Check env variables
 source "${SCRIPT_DIR}/tests/check_env_vars.sh"
 for v in BUILD_ADVANCED_ODOM CLEAN_BUILD CLONE_ONLY; do check_enum "$v" true false; done
+echo "TARGETARCH=${TARGETARCH}"
+echo "RENDER_GID=${RENDER_GID}"
 print_envvars
 
 if [ "$CLEAN_BUILD" = "true" ]; then
@@ -30,13 +34,8 @@ CLONE_DIR="${SCRIPT_DIR}/../_github_clones"
 mkdir -p "$CLONE_DIR"
 
 REPOS=( # Format: "URL;BRANCH;LOCAL_DIR_NAME"
-  # Simulation image
+  # Simulation image (PX4-only; ArduPilot, Betaflight, and asv_wave_sim omitted in simulation.dockerfile)
   "https://github.com/PX4/PX4-Autopilot.git;v1.17.0;PX4-Autopilot"
-  "https://github.com/ArduPilot/ardupilot.git;Copter-4.6.3;ardupilot"
-  "https://github.com/ArduPilot/ardupilot_gazebo.git;main;ardupilot_gazebo"
-  "https://github.com/betaflight/betaflight.git;2026.6.2;betaflight"
-  "https://github.com/betaflight/aeroloop_gazebo.git;gz;aeroloop_gazebo"
-  "https://github.com/srmainwaring/asv_wave_sim.git;master;asv_wave_sim"
   # Ground image
   "https://github.com/mavlink/c_library_v2.git;master;c_library_v2"
   "https://github.com/mavlink-router/mavlink-router.git;master;mavlink-router"
@@ -116,13 +115,30 @@ unzip -q -o "$ZIP_FILE" -d "$SCRIPT_DIR/.."
 if [ "$CLONE_ONLY" = "true" ]; then
   echo -e "Skipping Docker builds"
 else
-  # Keep the base images local, so cached builds also work offline
-  for img in ubuntu:24.04; do docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img"; done
+  # Keep both base images local so cached builds work offline (simulation.dockerfile uses osrf/ros:jazzy-desktop-full)
+  for img in ubuntu:24.04 osrf/ros:jazzy-desktop-full; do
+    docker image inspect "$img" >/dev/null 2>&1 || docker pull "$img"
+  done
+
   # Build common layers reused between images
-  docker build $BUILD_OPTS --provenance=false --target ros2-image -t transitional-ros2-image -f "${SCRIPT_DIR}/docker/aircraft.dockerfile" "${SCRIPT_DIR}/.."
-  docker build $BUILD_OPTS --provenance=false --target ros2-gcs-image -t transitional-ros2-gcs-image -f "${SCRIPT_DIR}/docker/ground.dockerfile" "${SCRIPT_DIR}/.."
+  docker build $BUILD_OPTS --provenance=false \
+    --build-arg TARGETARCH="${TARGETARCH}" \
+    --target ros2-image -t transitional-ros2-image \
+    -f "${SCRIPT_DIR}/docker/aircraft.dockerfile" "${SCRIPT_DIR}/.."
+
+  docker build $BUILD_OPTS --provenance=false \
+    --target ros2-gcs-image -t transitional-ros2-gcs-image \
+    -f "${SCRIPT_DIR}/docker/ground.dockerfile" "${SCRIPT_DIR}/.."
+
   # Build the 3 main images
-  docker build $BUILD_OPTS --build-arg BUILD_ADVANCED_ODOM="${BUILD_ADVANCED_ODOM}" -t aircraft-image -f "${SCRIPT_DIR}/docker/aircraft.dockerfile" "${SCRIPT_DIR}/.."
-  docker build $BUILD_OPTS -t ground-image -f "${SCRIPT_DIR}/docker/ground.dockerfile" "${SCRIPT_DIR}/.."
-  docker build $BUILD_OPTS -t simulation-image -f "${SCRIPT_DIR}/docker/simulation.dockerfile" "${SCRIPT_DIR}/.."
+  docker build $BUILD_OPTS \
+    --build-arg BUILD_ADVANCED_ODOM="${BUILD_ADVANCED_ODOM}" \
+    --build-arg TARGETARCH="${TARGETARCH}" \
+    -t aircraft-image -f "${SCRIPT_DIR}/docker/aircraft.dockerfile" "${SCRIPT_DIR}/.."
+
+  docker build $BUILD_OPTS \
+    -t ground-image -f "${SCRIPT_DIR}/docker/ground.dockerfile" "${SCRIPT_DIR}/.."
+
+  docker build $BUILD_OPTS \
+    -t simulation-image -f "${SCRIPT_DIR}/docker/simulation.dockerfile" "${SCRIPT_DIR}/.."
 fi

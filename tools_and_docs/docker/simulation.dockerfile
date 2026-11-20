@@ -18,14 +18,12 @@ ENV PIP_NO_CACHE_DIR=1
 ENV CCACHE_DISABLE=1
 ENV LANG=en_US.UTF-8
 
-# Environment variables for Gazebo Harmonic, AMD RX 7900 XTX & WSL ssh -Y
+# Environment variables for Gazebo Harmonic & SSH X11 / WSLg forwarding
 ENV QT_X11_NO_MITSHM=1
 ENV XAUTHORITY=/tmp/.Xauthority
 ENV GZ_SIM_RESOURCE_PATH=/workspace/models:/aas/simulation_resources
-ENV GZ_CONFIG_PATH=/usr/share/gz
-ENV MESA_LOADER_DRIVER_OVERRIDE=radeonsi
-ENV VGL_COMPRESS=proxy
-ENV GZ_IP=127.0.0.1
+ENV GZ_CONFIG_PATH=/opt/gz_config
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # 1. Configure UTF-8 locales (from aircraft.dockerfile)
 RUN apt-get update && apt-get install -y --no-install-recommends locales \
@@ -46,13 +44,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -m -s /bin/bash -u 1000 -o qgcuser || true \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Install Zenoh ROS 2 bridge (from aircraft.dockerfile, needed to bridge with aircraft container)
-RUN curl -fsSL https://download.eclipse.org/zenoh/debian-repo/zenoh-public-key | gpg --dearmor --yes --output /etc/apt/keyrings/zenoh-public-key.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/zenoh-public-key.gpg] https://download.eclipse.org/zenoh/debian-repo/ /" > /etc/apt/sources.list.d/zenoh.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends zenoh-bridge-ros2dds \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# 3. Install Zenoh ROS 2 bridge directly from GitHub Releases (bypasses download.eclipse.org 403)
+RUN ZENOH_VER=1.2.1 && \
+    ARCH=$(uname -m) && \
+    wget -q "https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/releases/download/${ZENOH_VER}/zenoh-plugin-ros2dds-${ZENOH_VER}-${ARCH}-unknown-linux-gnu-standalone.zip" -O /tmp/zenoh.zip && \
+    python3 -m zipfile -e /tmp/zenoh.zip /usr/local/bin/ && \
+    chmod +x /usr/local/bin/zenoh-bridge-ros2dds && \
+    rm -f /tmp/zenoh.zip
 
 # 4. Add OSRF Gazebo repository and install Gazebo Harmonic + ROS 2 bindings
 RUN curl -fsSL https://packages.osrfoundation.org/gazebo.gpg -o /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg \
@@ -68,7 +66,7 @@ RUN curl -fsSL https://packages.osrfoundation.org/gazebo.gpg -o /usr/share/keyri
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# 5. Install VirtualGL for AMD GPU rendering over WSL ssh -Y
+# 5. Install VirtualGL (kept available for native AMD X11 hosts)
 RUN VGL_VER=3.1.5 && \
     wget -q "https://github.com/VirtualGL/virtualgl/releases/download/${VGL_VER}/virtualgl_${VGL_VER}_amd64.deb" -O /tmp/virtualgl.deb && \
     apt-get update && apt-get install -y --no-install-recommends /tmp/virtualgl.deb && \
@@ -114,7 +112,7 @@ RUN make px4_sitl
 ################################################################################
 FROM ros2-gz-amd-px4 AS ros2-gz-amd-px4-gst-zmq
 
-# 1. Install GStreamer libraries (required by gz_gst_bridge and drone camera plugins)
+# 1. Install GStreamer runtime & dev libraries (required by gz_gst_bridge and drone camera plugins)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     gstreamer1.0-tools \
@@ -123,6 +121,8 @@ RUN apt-get update \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav \
     gstreamer1.0-gl \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
     python3-gi \
     gir1.2-gst-plugins-base-1.0 \
     gir1.2-gstreamer-1.0 \
@@ -178,18 +178,11 @@ RUN mkdir -p build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && make -j$(nproc)
 
-# 5. Auto-route GUI 'gz sim' calls through VirtualGL on the AMD GPU for tmuxinator & docker exec
-RUN printf '#!/usr/bin/env bash\nsource /opt/ros/jazzy/setup.bash\nif [[ "$1" == "sim" && "$*" != *" -s"* && "$*" != *"--headless-rendering"* && -n "$DISPLAY" ]]; then\n  exec vglrun /usr/bin/gz "$@"\nelse\n  exec /usr/bin/gz "$@"\nfi\n' > /usr/local/bin/gz && \
-    chmod +x /usr/local/bin/gz
-
-# 6. Source ROS 2 and AAS workspaces in interactive shells
-RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc \
-    && echo "source /aas/github_ws/install/local_setup.bash" >> /root/.bashrc \
-    && echo "source /aas/simulation_ws/install/local_setup.bash" >> /root/.bashrc
-
-# 7. Copy AMD GPU / X11 SSH entrypoint & tmuxinator configuration
-# 5. Auto-route GUI 'gz sim' calls through VirtualGL on the AMD GPU for tmuxinator & docker exec
-RUN printf '#!/usr/bin/env bash\nsource /opt/ros/jazzy/setup.bash\nif [[ "$1" == "sim" && "$*" != *" -s"* && "$*" != *"--headless-rendering"* && -n "$DISPLAY" ]]; then\n  exec vglrun /usr/bin/gz "$@"\nelse\n  exec /usr/bin/gz "$@"\nfi\n' > /usr/local/bin/gz && \
+# 5. Merge Gazebo YAML configs (/usr/local overrides /usr) and use Mesa software GL for GUI over SSH/WSLg
+RUN mkdir -p /opt/gz_config && \
+    ln -sf /usr/share/gz/*.yaml /opt/gz_config/ && \
+    ([ -d /usr/local/share/gz ] && ln -sf /usr/local/share/gz/*.yaml /opt/gz_config/ || true) && \
+    printf '#!/usr/bin/env bash\nsource /opt/ros/jazzy/setup.bash\nif [[ "$1" == "sim" && "$*" != *" -s"* && "$*" != *"--headless-rendering"* && -n "$DISPLAY" ]]; then\n  unset VGL_DISPLAY LIBGL_ALWAYS_INDIRECT\n  export LIBGL_ALWAYS_SOFTWARE=1\nfi\nexec /usr/bin/gz "$@"\n' > /usr/local/bin/gz && \
     chmod +x /usr/local/bin/gz
 
 # 6. Source ROS 2 and AAS workspaces in interactive shells

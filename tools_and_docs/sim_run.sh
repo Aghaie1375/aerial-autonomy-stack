@@ -108,11 +108,12 @@ GPU_OPTS="--device /dev/dri --device /dev/kfd --group-add video --group-add ${RE
 XAUTH_TMP="/tmp/.aas_xauth_inst${INSTANCE}"
 SSH_X11_OPTS=""
 if [[ "$DESK_ENV" == "ssh_x11" && -n "$DISPLAY" ]] && command -v xauth >/dev/null 2>&1; then
-  rm -f "$XAUTH_TMP"
-  touch "$XAUTH_TMP"
+  : > "$XAUTH_TMP"
   chmod 644 "$XAUTH_TMP"
   xauth nlist "$DISPLAY" 2>/dev/null | sed -e 's/^..../ffff/' | xauth -f "$XAUTH_TMP" nmerge - 2>/dev/null || true
-  SSH_X11_OPTS="--volume ${XAUTH_TMP}:/tmp/.Xauthority:ro --env XAUTHORITY=/tmp/.Xauthority --env VGL_DISPLAY=egl --env VGL_COMPRESS=proxy"
+  HOST_X11_IP=$(hostname -I | awk '{print $1}')
+  DOCKER_DISPLAY="${HOST_X11_IP}:${DISPLAY#*:}"
+  SSH_X11_OPTS="--env DISPLAY=${DOCKER_DISPLAY} --volume ${XAUTH_TMP}:/tmp/.Xauthority:ro --env XAUTHORITY=/tmp/.Xauthority --env VGL_DISPLAY= --env LIBGL_ALWAYS_SOFTWARE=1"
 fi
 
 # WSL-specific options (Set adapter to AMD or leave auto-detection without hardcoded NVIDIA)
@@ -157,9 +158,9 @@ XTERM_CONFIG_ARGS=(
 DOCKER_CMD="docker run -it --rm \
   --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
   ${GPU_OPTS} \
-  ${SSH_X11_OPTS} \
   --security-opt seccomp=unconfined \
   --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
+  ${SSH_X11_OPTS} \
   --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR \
   --env NUM_QUADS=$NUM_QUADS --env NUM_VTOLS=$NUM_VTOLS --env NUM_TAILS=$NUM_TAILS --env WORLD=$WORLD \
   --env SIMULATED_TIME=true --env RTF=$RTF --env START_AS_PAUSED=$START_AS_PAUSED \
@@ -193,9 +194,9 @@ if [[ "$HITL" == "false" ]]; then
     DOCKER_CMD="docker run -it --rm \
       --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
       ${GPU_OPTS} \
-      ${SSH_X11_OPTS} \
       --security-opt seccomp=unconfined \
       --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
+      ${SSH_X11_OPTS} \
       --env HEADLESS=$HEADLESS --env AUTOPILOT=$AUTOPILOT \
       --env QUAD_IDS=$(seq -s, 1 $NUM_QUADS) \
       --env VTOL_IDS=$(seq -s, $((NUM_QUADS + 1)) $((NUM_QUADS + NUM_VTOLS))) \
@@ -206,6 +207,7 @@ if [[ "$HITL" == "false" ]]; then
       --net=$SIM_NET_NAME --ip=${SIM_SUBNET}.90.${GROUND_ID} \
       --privileged \
       --name $GND_CONT_NAME"
+
     # Add WSL-specific options and complete the command
     if [[ "$DESK_ENV" == "wsl" ]]; then
       DOCKER_CMD="$DOCKER_CMD $WSL_OPTS"
@@ -230,9 +232,9 @@ if [[ "$HITL" == "false" ]]; then
       DOCKER_CMD="docker run -it --rm \
         --volume /tmp/.X11-unix:/tmp/.X11-unix:rw \
         ${GPU_OPTS} \
-        ${SSH_X11_OPTS} \
         --security-opt seccomp=unconfined \
         --env DISPLAY=$DISPLAY --env QT_X11_NO_MITSHM=1 --env XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR --env GST_DEBUG=3 \
+        ${SSH_X11_OPTS} \
         --env AUTOPILOT=$AUTOPILOT --env HEADLESS=$HEADLESS --env CAMERA=$CAMERA --env LIDAR=$LIDAR --env ODOM=$ODOM --env PX4_ROS2_LIB=$PX4_ROS2_LIB \
         --env DRONE_TYPE=$drone_type --env DRONE_ID=$DRONE_ID \
         --env SIMULATED_TIME=true \
@@ -243,6 +245,7 @@ if [[ "$HITL" == "false" ]]; then
         --net=$SIM_NET_NAME --ip=${SIM_SUBNET}.90.$DRONE_ID \
         --privileged \
         --name $NAME_AIRCRAFT_CNT"
+        
       # Add WSL-specific options and complete the command
       if [[ "$DESK_ENV" == "wsl" ]]; then
         DOCKER_CMD="$DOCKER_CMD $WSL_OPTS"
